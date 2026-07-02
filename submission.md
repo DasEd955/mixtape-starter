@@ -97,6 +97,20 @@ Net: issues 1, 4, and 5 are solidly confirmed (two by failing tests, one by dire
 
 ---
 
+## Root Cause Analysis (Bug 5)
+
+**Issue number and title**: Issue 5, "The last song in a playlist never shows up."
+
+**How you reproduced it**: Ran the test suite (`pytest tests/ -q`), which surfaced two failing tests in `test_playlists.py`. The first assertion error confirmed the returned song count did not match the expected count, `assert 4 == 5`. The second failing assertion confirmed the last song in the playlist was missing from the returned list, since the expected list of titles included `Track 5` but the actual list did not. Both failures pointed to the same underlying symptom, the final song in a playlist was being dropped before it reached the caller.
+
+**How you found the root cause**: Traced the pytest failures back to `services/playlist_service.py` and the corresponding `get_playlist_songs()` function, the only function in the module responsible for retrieving and returning playlist songs. Inside that function, the query itself correctly ordered songs ascending by `position`, so the bug had to be in how the results were sliced before being returned.
+
+**The root cause**: The return statement built the final list with `[song.to_dict() for song in songs[:-1]]`. The `[:-1]` slice always excludes the last element of the list, regardless of playlist size, so the query correctly fetched all songs in order but the return statement then silently dropped the final one. This looks like a common mistake where `[:-1]` was written by mistake or confused with a syntax meant to control sort order, when in reality the ordering was already handled correctly by `order_by(asc(playlist_entries.c.position))` earlier in the function, and slicing had nothing to do with sort order at all.
+
+**Your fix and side-effect check**: Changed the slice from `songs[:-1]` to `songs[:]`, so the full ordered list of songs is returned instead of all but the last one. After the fix, all tests in `test_playlists.py` pass, including `test_playlist_returns_all_songs` (now returns the full count of 5) and `test_playlist_returns_songs_in_order` (now returns all five titles in the correct order, ending with `Track 5`). The unaffected third test in the same file, covering the empty playlist case, still passes, confirming the fix did not change behavior for playlists with zero songs.
+
+---
+
 ## AI Usage
 
 This map was drafted independently by reading the actual source files (models.py, app.py, every file in services/ and routes/, the test suite, and README.md) and running `pytest tests/ -q` to verify claims empirically rather than trust docstrings or comments. It was then refined with AI assistance for structure and completeness, not the other way around. Below is my original, unrefined submission as pasted to the assistant, followed by the assistant's evaluation of it against the finished map above.
