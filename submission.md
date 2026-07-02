@@ -41,7 +41,7 @@ graph TD
     APP -->|registers blueprints| R_PLAYLISTS
     APP -->|registers blueprints| R_USERS
     APP -->|registers blueprints| R_FEED
-    APP -->|db.create_all()| MODELS
+    APP -->|creates schema| MODELS
     SEED -->|populates| DB
 
     R_SONGS --> S_SEARCH
