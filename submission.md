@@ -2,6 +2,56 @@
 
 Mixtape is a Flask app for sharing songs with friends, building collaborative playlists, and tracking listening stats (streaks, activity feeds, notifications). It uses Flask-SQLAlchemy with a SQLite database by default and organizes code into three layers: routes (HTTP), services (business logic), and models (persistence).
 
+## AI Usage
+
+This map was drafted independently by reading the actual source files (models.py, app.py, every file in services/ and routes/, the test suite, and README.md) and running `pytest tests/ -q` to verify claims empirically rather than trust docstrings or comments. It was then refined with AI assistance for structure and completeness, not the other way around. Below is my original, unrefined submission as pasted to the assistant, followed by the assistant's evaluation of it against the finished map above.
+
+### My Original Notes (as submitted, unedited)
+
+The app is an overall fundamental yet comprehensive user song application for mixtapes where friends can share songs, built collab playlists, and track listening stats.
+
+ model.py defines the main classes utilized in the repository, including User, Tag, Song, ListeningEvent, Rating, Playlist, and Notification. In addition, it also defines the relational schema via SQLAlchemy & for all the aforementioned respective classes initializes the columns/features that each SQL table for the classes will have. Each also includes a to_dict() method used for returning selected attributes from the class tables as dict, which allows easy jsonify() formatting via Flask. 
+ 
+ app.py provides the Flask structure for launching the app, including default configuration such as the database URL. It registers blueprints via url_prefix and returns the app object in the create_app() function, when the module is run it creates this by calling the aforementioned function & running the app with debug mode on. 
+ 
+ The services directory includes modules for feed_service.py (Handles "Friends Listening Now" feed & activity logic) which gets the friends listening now & acitvity feed of the user. notification_service.py handles creating & retrieving notifications, with functions for creating a notification object and committing it to the db, adding it to playlist, rating a song, getting notifications, and marking as read. playlist_service handles playlist creation & retrieval logic, including creating a new playlist and adding it to the db, getting songs in the playlist via db join, getting playlist, and getting user playlists. search_service.py handles song search logic, including searching for songs which goes by title or artist name via query, and getting a single song by ID. streak_service.py handles listening logic for users such as recording an event via the datetime module TTL timestamped, update the listening streak, getting streak etc. 
+ 
+ The routes directory covers feeding routes for the Flask app including for mixtape, mixtape playlists, songs, and users with several interface level functions in each module that return jsonify-ed objects. 
+ 
+ The tests directory includes a fundamental suite with unit tests for playlists, search, and streaks via pytest for easy launching of the suite. Data flow — user rates a song: POST /songs/<id>/rate in routes/songs.py calls notification_service.notify_song_rated(). That function creates a Notification record for the song's original sharer. There's no separate rating model; the rating is stored directly on the Song.
+
+### Assistant's Evaluation (judging the above against the actual codebase)
+
+What was accurate: the file-by-file, function-by-function summary of app.py, models.py, and each services/ module was correct at the level of "what does this do." Identifying that there's no separate rating model, and using the rating flow as the worked data flow example, matched the assignment's own template for a strong map.
+
+What was missing, and what the refined map above adds:
+
+1. **The described data flow was factually wrong.** The notes claim `POST /songs/<id>/rate` calls a function named `notify_song_rated()` that creates a notification for the song's sharer. No such function exists anywhere in the codebase. The actual route calls `notification_service.rate_song()`, which only writes to the `Rating` table and never creates a `Notification`. This is is not a paraphrase error, it is the exact missing behavior tracked as Issue 4 in README.md ("I got notified when a friend added my song to a playlist but not when they rated it"). The original notes describe the feature working as if the bug were already fixed.
+2. **No verification against the code or tests.** The notes never mention running `pytest`, never surface that 3 of 13 tests currently fail, and never mention that some test files contain comments describing known bugs. The finished map treats every claim as something to verify by execution, the original notes treat the code's apparent structure as ground truth.
+3. **README.md was never referenced.** The repo is explicitly framed as "Project 5: Mixtape Bug Hunt" with five named, tracked issues. The original notes reconstruct roughly the same problem space from code alone but never checks whether documentation of known issues already exists.
+4. **No mention of the two other confirmed bugs** (the Sunday streak-reset condition, the `[:-1]` slice dropping the last playlist song) or the architectural gap between the playlist write path (ORM relationship, no `position` set) and read path (raw table query ordered by `position`).
+5. **Minor layering inconsistency missed**: `routes/users.py`'s `get_user` bypasses the service layer and queries the model directly, breaking the otherwise consistent routes delegate to services pattern the notes correctly identified elsewhere.
+
+Overall: strong grasp of static structure, but the one dynamic claim in the original notes (the rating notification flow) was incorrect, and it happened to be incorrect in exactly the way the assignment was designed to test.
+
+### Generated Architecture Diagram
+
+The mermaid diagram and descriptions in the [Repository Architecture](#repository-architecture) section below were generated by the assistant, but only after the My Original Notes section had already been submitted, so the diagram itself carries none of the original notes' inaccuracies. It was built directly from the finished, AI refined version of this codebase map, meaning it reflects the corrected structure and gaps (such as the `routes/users.py` layering exception) rather than the unverified first draft.
+
+### AI Collaboration on Issue 4 (Missing Rating Notification)
+
+For Issue 4, I used the assistant in a verification role rather than asking it to find or fix the bug outright. After reading the README's description of the issue and confirming the affected file was `notification_service.py`, I asked the assistant to generate a new test module, `tests/test_ratings.py`, covering the expected behavior, that rating a friend's song should create a notification for the sharer. Running that test against the unmodified code failed as expected, giving me a concrete, reproducible confirmation of the bug rather than relying on inspection alone.
+
+I then located `rate_song()` in `notification_service.py` and compared it with `add_to_playlist()` in the same file, noticing that the latter had an explicit notification call and the former did not. Rather than trusting that observation on its own, I gave the assistant the `rate_song()` function and asked it to explain the logic back to me step by step. That explanation confirmed there was no notification call hidden anywhere in the function and validated my judgment that the correct insertion point was after the `db.session.commit()` line, consistent with where `add_to_playlist()` fires its own notification. I wrote and applied the fix myself based on that confirmation, then reran the `test_ratings.py` suite I had generated earlier and verified all tests passed, resolving the issue.
+
+---
+
+## Git Log Screenshot
+
+![git log --oneline on bugfix/mixtape](screenshots/git-log.png)
+
+---
+
 ## Repository Architecture
 
 ```mermaid
@@ -189,45 +239,9 @@ Net: issues 1, 4, and 5 are solidly confirmed (two by failing tests, one by dire
 
 **The root cause**: `rate_song()` performed the upsert on the `Rating` table and committed, but never called `create_notification()`. This is a missing feature rather than an incorrect condition, the function simply lacked the notification step that its sibling function in the same module already implements for a different action on the same shared song.
 
-**Your fix and side-effect check**: Added a call to `create_notification()` inside `rate_song()`, placed after `db.session.commit()` and guarded by two conditions: the rating must be newly created (not an update to an existing rating) and the rater must not be the song's own sharer. This mirrors `add_to_playlist()`'s guard against self-notification and avoids re-notifying the sharer every time the same user changes their existing rating. After the fix, all tests in `test_ratings.py` pass, including the case confirming a repeat rating from the same user does not trigger a second notification. AI collaboration used to identify and apply this fix is detailed in the [AI Usage](#ai-usage) section below.
+**Your fix and side-effect check**: Added a call to `create_notification()` inside `rate_song()`, placed after `db.session.commit()` and guarded by two conditions: the rating must be newly created (not an update to an existing rating) and the rater must not be the song's own sharer. This mirrors `add_to_playlist()`'s guard against self-notification and avoids re-notifying the sharer every time the same user changes their existing rating. After the fix, all tests in `test_ratings.py` pass, including the case confirming a repeat rating from the same user does not trigger a second notification. AI collaboration used to identify and apply this fix is detailed in the [AI Usage](#ai-usage) section at the top of this document.
 
 ---
-
-## AI Usage
-
-This map was drafted independently by reading the actual source files (models.py, app.py, every file in services/ and routes/, the test suite, and README.md) and running `pytest tests/ -q` to verify claims empirically rather than trust docstrings or comments. It was then refined with AI assistance for structure and completeness, not the other way around. Below is my original, unrefined submission as pasted to the assistant, followed by the assistant's evaluation of it against the finished map above.
-
-### My Original Notes (as submitted, unedited)
-
-The app is an overall fundamental yet comprehensive user song application for mixtapes where friends can share songs, built collab playlists, and track listening stats.
-
- model.py defines the main classes utilized in the repository, including User, Tag, Song, ListeningEvent, Rating, Playlist, and Notification. In addition, it also defines the relational schema via SQLAlchemy & for all the aforementioned respective classes initializes the columns/features that each SQL table for the classes will have. Each also includes a to_dict() method used for returning selected attributes from the class tables as dict, which allows easy jsonify() formatting via Flask. 
- 
- app.py provides the Flask structure for launching the app, including default configuration such as the database URL. It registers blueprints via url_prefix and returns the app object in the create_app() function, when the module is run it creates this by calling the aforementioned function & running the app with debug mode on. 
- 
- The services directory includes modules for feed_service.py (Handles "Friends Listening Now" feed & activity logic) which gets the friends listening now & acitvity feed of the user. notification_service.py handles creating & retrieving notifications, with functions for creating a notification object and committing it to the db, adding it to playlist, rating a song, getting notifications, and marking as read. playlist_service handles playlist creation & retrieval logic, including creating a new playlist and adding it to the db, getting songs in the playlist via db join, getting playlist, and getting user playlists. search_service.py handles song search logic, including searching for songs which goes by title or artist name via query, and getting a single song by ID. streak_service.py handles listening logic for users such as recording an event via the datetime module TTL timestamped, update the listening streak, getting streak etc. 
- 
- The routes directory covers feeding routes for the Flask app including for mixtape, mixtape playlists, songs, and users with several interface level functions in each module that return jsonify-ed objects. 
- 
- The tests directory includes a fundamental suite with unit tests for playlists, search, and streaks via pytest for easy launching of the suite. Data flow — user rates a song: POST /songs/<id>/rate in routes/songs.py calls notification_service.notify_song_rated(). That function creates a Notification record for the song's original sharer. There's no separate rating model; the rating is stored directly on the Song.
-
-### Assistant's Evaluation (judging the above against the actual codebase)
-
-What was accurate: the file-by-file, function-by-function summary of app.py, models.py, and each services/ module was correct at the level of "what does this do." Identifying that there's no separate rating model, and using the rating flow as the worked data flow example, matched the assignment's own template for a strong map.
-
-What was missing, and what the refined map above adds:
-
-1. **The described data flow was factually wrong.** The notes claim `POST /songs/<id>/rate` calls a function named `notify_song_rated()` that creates a notification for the song's sharer. No such function exists anywhere in the codebase. The actual route calls `notification_service.rate_song()`, which only writes to the `Rating` table and never creates a `Notification`. This is is not a paraphrase error, it is the exact missing behavior tracked as Issue 4 in README.md ("I got notified when a friend added my song to a playlist but not when they rated it"). The original notes describe the feature working as if the bug were already fixed.
-2. **No verification against the code or tests.** The notes never mention running `pytest`, never surface that 3 of 13 tests currently fail, and never mention that some test files contain comments describing known bugs. The finished map treats every claim as something to verify by execution, the original notes treat the code's apparent structure as ground truth.
-3. **README.md was never referenced.** The repo is explicitly framed as "Project 5: Mixtape Bug Hunt" with five named, tracked issues. The original notes reconstruct roughly the same problem space from code alone but never checks whether documentation of known issues already exists.
-4. **No mention of the two other confirmed bugs** (the Sunday streak-reset condition, the `[:-1]` slice dropping the last playlist song) or the architectural gap between the playlist write path (ORM relationship, no `position` set) and read path (raw table query ordered by `position`).
-5. **Minor layering inconsistency missed**: `routes/users.py`'s `get_user` bypasses the service layer and queries the model directly, breaking the otherwise consistent routes delegate to services pattern the notes correctly identified elsewhere.
-
-Overall: strong grasp of static structure, but the one dynamic claim in the original notes (the rating notification flow) was incorrect, and it happened to be incorrect in exactly the way the assignment was designed to test.
-
-### Generated Architecture Diagram
-
-The mermaid diagram and descriptions in the [Repository Architecture](#repository-architecture) section above were generated by the assistant, but only after the My Original Notes section had already been submitted, so the diagram itself carries none of the original notes' inaccuracies. It was built directly from the finished, AI refined version of this codebase map, meaning it reflects the corrected structure and gaps (such as the `routes/users.py` layering exception) rather than the unverified first draft.
 
 ## Root Cause Analysis (Bug 2)
 
@@ -254,11 +268,3 @@ The mermaid diagram and descriptions in the [Repository Architecture](#repositor
 **The root cause**: The `search_songs()` function includes an unnecessary OUTER JOIN on `song_tags`. While this doesn't produce visible duplicate results due to SQLAlchemy's ORM deduplication, it creates wasteful behavior: the database generates one row per tag for each matching song, transmits all these redundant rows to the application, and SQLAlchemy discards the duplicates. This wastes database bandwidth and processing for zero functional benefit. The join was likely added with good intent (to ensure tags are loaded) but overlooks that the ORM relationship already handles tag loading efficiently.
 
 **Your fix and side-effect check**: Removed the `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` clause from the query and removed the now-unused imports (`Tag`, `song_tags`). The `Song.tags` relationship continues to load tags via its configured `lazy="subquery"` strategy, so `song.to_dict()` still includes all tags in each result without any join. All 6 tests in `test_search.py` pass after the fix, including the new regression test `test_search_no_duplicate_song_ids`, which explicitly validates that each song appears only once by ID. The existing search functionality remains unchanged; only the query is now more efficient.
-
----
-
-### AI Collaboration on Issue 4 (Missing Rating Notification)
-
-For Issue 4, I used the assistant in a verification role rather than asking it to find or fix the bug outright. After reading the README's description of the issue and confirming the affected file was `notification_service.py`, I asked the assistant to generate a new test module, `tests/test_ratings.py`, covering the expected behavior, that rating a friend's song should create a notification for the sharer. Running that test against the unmodified code failed as expected, giving me a concrete, reproducible confirmation of the bug rather than relying on inspection alone.
-
-I then located `rate_song()` in `notification_service.py` and compared it with `add_to_playlist()` in the same file, noticing that the latter had an explicit notification call and the former did not. Rather than trusting that observation on its own, I gave the assistant the `rate_song()` function and asked it to explain the logic back to me step by step. That explanation confirmed there was no notification call hidden anywhere in the function and validated my judgment that the correct insertion point was after the `db.session.commit()` line, consistent with where `add_to_playlist()` fires its own notification. I wrote and applied the fix myself based on that confirmation, then reran the `test_ratings.py` suite I had generated earlier and verified all tests passed, resolving the issue.
