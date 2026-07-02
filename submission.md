@@ -157,6 +157,20 @@ What was missing, and what the refined map above adds:
 
 Overall: strong grasp of static structure, but the one dynamic claim in the original notes (the rating notification flow) was incorrect, and it happened to be incorrect in exactly the way the assignment was designed to test.
 
+## Root Cause Analysis (Bug 2)
+
+**Issue number and title**: Issue 2, "Friends Listening Now shows people from yesterday."
+
+**How you reproduced it**: This issue was not wired to a failing test. I first suspected the "last 24 hours" filter in `get_friends_listening_now()` itself was broken, a timezone math bug in the rolling window. I wrote `tests/test_feed.py` to test that directly, covering a friend who listened within 24 hours, one who listened more than 24 hours ago, and one just under 24 hours. All three passed against the unmodified code, so the recency filter itself was fine, friends from yesterday were correctly being excluded from the list.
+
+**How you found the root cause**: Since the filter itself was not the problem, I traced what else could make a friend's entry look stale in the feed. `get_friends_listening_now()` returns each friend's `to_dict()`, which includes `last_listened_at`, and that field is written by a different module entirely, `update_listening_streak()` in `streak_service.py`. Its job is to bump a user's daily listening streak: first listen of the day increments the streak and records the listen time, a same day second listen should not bump the streak again since the user already got credit for that day.
+
+**The root cause**: On a same-day repeat listen, the code correctly skipped incrementing the streak but also skipped updating `last_listened_at`, `if days_since_last == 0: # Already updated today, no change needed / return`. So if a friend listened at 8am and again at 9pm, the app kept reporting "last listened at 8am" all day, because the timestamp update only ran once per calendar day, on the first listen. Displayed later, that stale 8am timestamp can look old or wrong to someone glancing at the feed, even though the friend is still legitimately listening and correctly included in the list. This is a different bug from the one I first suspected, the list membership and 24 hour cutoff were never wrong, only the displayed timestamp on entries that were already correctly included.
+
+**Your fix and side-effect check**: Added `user.last_listened_at = now` to the `days_since_last == 0` branch so the timestamp always reflects the most recent listen, not just the first one of the day, while leaving the streak-increment and streak-reset branches untouched. I added a regression test to `tests/test_feed.py` that simulates a friend listening twice in one day and asserts the second listen's timestamp is newer than the first, then asserts that timestamp is what shows up in the feed. Before the fix, the test failed because the timestamp stayed frozen at the first listen. After the fix, all 4 tests in `tests/test_feed.py` pass, including the three original recency filtering tests, confirming the streak counting logic itself was never touched.
+
+---
+
 ### AI Collaboration on Issue 4 (Missing Rating Notification)
 
 For Issue 4, I used the assistant in a verification role rather than asking it to find or fix the bug outright. After reading the README's description of the issue and confirming the affected file was `notification_service.py`, I asked the assistant to generate a new test module, `tests/test_ratings.py`, covering the expected behavior, that rating a friend's song should create a notification for the sharer. Running that test against the unmodified code failed as expected, giving me a concrete, reproducible confirmation of the bug rather than relying on inspection alone.
