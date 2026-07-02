@@ -83,6 +83,20 @@ Net: issues 1, 4, and 5 are solidly confirmed (two by failing tests, one by dire
 
 ---
 
+## Root Cause Analysis (Bug 1)
+
+**Issue number and title**: Issue 1, "My listening streak keeps resetting."
+
+**How you reproduced it**: Ran the test suite (`pytest tests/ -q`), which surfaced a failing test, `test_streaks.py::test_streak_increments_on_sunday`, asserting `1 == 2`. This confirmed that a user who listens on consecutive days spanning a Sunday does not get their streak incremented as expected, before making any code changes.
+
+**How you found the root cause**: Traced the failure via the pytest output, which pointed directly at the assertion failure in `test_streaks.py`. From there I opened `services/streak_service.py` and located `update_listening_streak()`, the only function that mutates `listening_streak`. Line 73 read `elif days_since_last == 1 and today.weekday() != 6:`. The moment I saw the `!= 6` clause tacked onto an otherwise correct one-day-gap check, I was confident this was the exact cause rather than just a suspicious area, since nothing in the function's docstring or the streak rules ("if the user listened yesterday: streak increments by 1") mentions any day-of-week exception.
+
+**The root cause**: `datetime.weekday()` returns `6` for Sunday. The condition `days_since_last == 1 and today.weekday() != 6` correctly detected a one day gap but then additionally required that the current day not be a Sunday. This meant that whenever a user's listening event happened to land on a Sunday, the increment branch was skipped even though the gap was exactly one day, and execution fell through to the `else` branch, which resets `listening_streak` to 1. The clause is unrelated to the function's documented contract, it reads like a leftover from an unrelated "skip weekends" rule that never belonged in streak logic.
+
+**Your fix and side-effect check**: Removed the `and today.weekday() != 6` clause so the condition is simply `elif days_since_last == 1:`, matching the documented rule that any exactly one day gap increments the streak regardless of which weekday it falls on. After the fix, all 5 tests in `test_streaks.py` pass, including the same day no-op case and the reset after gap case, confirming the other two branches (`days_since_last == 0` and the `else` reset) were untouched and still behave correctly.
+
+---
+
 ## AI Usage
 
 This map was drafted independently by reading the actual source files (models.py, app.py, every file in services/ and routes/, the test suite, and README.md) and running `pytest tests/ -q` to verify claims empirically rather than trust docstrings or comments. It was then refined with AI assistance for structure and completeness, not the other way around. Below is my original, unrefined submission as pasted to the assistant, followed by the assistant's evaluation of it against the finished map above.
@@ -99,7 +113,7 @@ The app is an overall fundamental yet comprehensive user song application for mi
  
  The routes directory covers feeding routes for the Flask app including for mixtape, mixtape playlists, songs, and users with several interface level functions in each module that return jsonify-ed objects. 
  
- The tests directory includes a fundamental suite with unit tests for playlists, search, and streaks via pytest for easy launching of the suite. Data flow — user rates a song: POST /songs/<id>/rate in routes/songs.py calls notification_service.notify_song_rated(). That function creates a Notification record for the song's original sharer. There's no separate rating model — the rating is stored directly on the Song.
+ The tests directory includes a fundamental suite with unit tests for playlists, search, and streaks via pytest for easy launching of the suite. Data flow — user rates a song: POST /songs/<id>/rate in routes/songs.py calls notification_service.notify_song_rated(). That function creates a Notification record for the song's original sharer. There's no separate rating model; the rating is stored directly on the Song.
 
 ### Assistant's Evaluation (judging the above against the actual codebase)
 
