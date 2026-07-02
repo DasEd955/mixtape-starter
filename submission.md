@@ -111,6 +111,20 @@ Net: issues 1, 4, and 5 are solidly confirmed (two by failing tests, one by dire
 
 ---
 
+## Root Cause Analysis (Bug 4)
+
+**Issue number and title**: Issue 4, "I got notified when a friend added my song to a playlist but not when they rated it."
+
+**How you reproduced it**: First read the README's issue description and confirmed the affected service was `notification_service.py`. Since this issue was not already wired to a failing test, I generated a new test module, `tests/test_ratings.py`, with a test asserting that a `Notification` is created for the song's sharer after a friend rates their song. Running this new test against the unmodified code confirmed it failed, since `rate_song()` never inserted a `Notification` row.
+
+**How you found the root cause**: Traced the `rate_song()` function in `notification_service.py` and compared it against `add_to_playlist()` in the same module. `add_to_playlist()` has a clear notification point at the end, a call to `create_notification()` guarded by a check that the person acting is not the song's original sharer. `rate_song()` had no equivalent call anywhere in its body. To confirm this judgment rather than assume it, I had the assistant walk through `rate_song()` line by line and explain its logic back to me. That explanation verified there was no notification logic hidden elsewhere in the function and confirmed that adding the call after the `db.session.commit()` line, mirroring where `add_to_playlist()` notifies after its own commit, was the correct and consistent place for it.
+
+**The root cause**: `rate_song()` performed the upsert on the `Rating` table and committed, but never called `create_notification()`. This is a missing feature rather than an incorrect condition, the function simply lacked the notification step that its sibling function in the same module already implements for a different action on the same shared song.
+
+**Your fix and side-effect check**: Added a call to `create_notification()` inside `rate_song()`, placed after `db.session.commit()` and guarded by two conditions: the rating must be newly created (not an update to an existing rating) and the rater must not be the song's own sharer. This mirrors `add_to_playlist()`'s guard against self-notification and avoids re-notifying the sharer every time the same user changes their existing rating. After the fix, all tests in `test_ratings.py` pass, including the case confirming a repeat rating from the same user does not trigger a second notification. AI collaboration used to identify and apply this fix is detailed in the [AI Usage](#ai-usage) section below.
+
+---
+
 ## AI Usage
 
 This map was drafted independently by reading the actual source files (models.py, app.py, every file in services/ and routes/, the test suite, and README.md) and running `pytest tests/ -q` to verify claims empirically rather than trust docstrings or comments. It was then refined with AI assistance for structure and completeness, not the other way around. Below is my original, unrefined submission as pasted to the assistant, followed by the assistant's evaluation of it against the finished map above.
@@ -142,3 +156,9 @@ What was missing, and what the refined map above adds:
 5. **Minor layering inconsistency missed**: `routes/users.py`'s `get_user` bypasses the service layer and queries the model directly, breaking the otherwise consistent routes delegate to services pattern the notes correctly identified elsewhere.
 
 Overall: strong grasp of static structure, but the one dynamic claim in the original notes (the rating notification flow) was incorrect, and it happened to be incorrect in exactly the way the assignment was designed to test.
+
+### AI Collaboration on Issue 4 (Missing Rating Notification)
+
+For Issue 4, I used the assistant in a verification role rather than asking it to find or fix the bug outright. After reading the README's description of the issue and confirming the affected file was `notification_service.py`, I asked the assistant to generate a new test module, `tests/test_ratings.py`, covering the expected behavior, that rating a friend's song should create a notification for the sharer. Running that test against the unmodified code failed as expected, giving me a concrete, reproducible confirmation of the bug rather than relying on inspection alone.
+
+I then located `rate_song()` in `notification_service.py` and compared it with `add_to_playlist()` in the same file, noticing that the latter had an explicit notification call and the former did not. Rather than trusting that observation on its own, I gave the assistant the `rate_song()` function and asked it to explain the logic back to me step by step. That explanation confirmed there was no notification call hidden anywhere in the function and validated my judgment that the correct insertion point was after the `db.session.commit()` line, consistent with where `add_to_playlist()` fires its own notification. I wrote and applied the fix myself based on that confirmation, then reran the `test_ratings.py` suite I had generated earlier and verified all tests passed, resolving the issue.
